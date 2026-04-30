@@ -557,8 +557,10 @@
 
     /* ─── Main App ─── */
     function App() {
-      // Estado para la API Key, intentamos cargarla del localStorage al inicio
-      const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem("sf_api_key") || "");
+      // Estado para las API Keys y el modelo seleccionado
+      const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem("sf_gemini_key") || "");
+      const [deepseekApiKey, setDeepseekApiKey] = useState(() => localStorage.getItem("sf_deepseek_key") || "");
+      const [aiModel, setAiModel] = useState("gemini-1.5-flash");
       
       const [idea, setIdea] = useState("");
       const [narrativeStyle, setNarrativeStyle] = useState(NARRATIVE_STYLES[0]);
@@ -573,11 +575,17 @@
       const resultRef = useRef(null);
       const { copied, copy } = useCopy();
 
-      // Guardar la API Key en localStorage cuando el usuario la escribe
-      const handleApiKeyChange = (e) => {
+      // Guardar las API Keys en localStorage
+      const handleGeminiKeyChange = (e) => {
         const val = e.target.value;
-        setUserApiKey(val);
-        localStorage.setItem("sf_api_key", val);
+        setGeminiApiKey(val);
+        localStorage.setItem("sf_gemini_key", val);
+      };
+
+      const handleDeepseekKeyChange = (e) => {
+        const val = e.target.value;
+        setDeepseekApiKey(val);
+        localStorage.setItem("sf_deepseek_key", val);
       };
 
       /* Scroll to results on mobile */
@@ -592,7 +600,7 @@
         if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !isGenerating) {
           generateStory();
         }
-      }, [idea, isGenerating, narrativeStyle, visualStyle, duration, keywords, userApiKey]);
+      }, [idea, isGenerating, narrativeStyle, visualStyle, duration, keywords, geminiApiKey, deepseekApiKey, aiModel]);
 
       useEffect(() => {
         window.addEventListener("keydown", handleKeyDown);
@@ -620,8 +628,12 @@
       };
 
       const generateStory = async () => {
-        if (!userApiKey.trim()) {
+        if (aiModel.startsWith("gemini") && !geminiApiKey.trim()) {
           setError("Por favor, ingresa tu API Key de Gemini en la configuración.");
+          return;
+        }
+        if (aiModel.startsWith("deepseek") && !deepseekApiKey.trim()) {
+          setError("Por favor, ingresa tu API Key de DeepSeek en la configuración.");
           return;
         }
 
@@ -663,22 +675,52 @@
         6. Las descripciones visuales (visualPrompt) deben encajar con el estilo: ${visualStyle}.
         7. Ajusta la cantidad de escenas a la duración estimada de: ${duration}.`;
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${userApiKey.trim()}`;
+        let url, fetchOptions;
 
-        try {
-          const data = await fetchWithRetry(url, {
+        if (aiModel.startsWith("gemini")) {
+          url = `https://generativelanguage.googleapis.com/v1beta/models/${aiModel}:generateContent?key=${geminiApiKey.trim()}`;
+          fetchOptions = {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               contents: [{ parts: [{ text: `Idea principal: ${idea}` }] }],
               systemInstruction: { parts: [{ text: systemPrompt }] },
-              generationConfig: { 
-                responseMimeType: "application/json"
-              }
+              generationConfig: { responseMimeType: "application/json" }
             })
-          });
+          };
+        } else {
+          // DeepSeek API (compatible con formato de OpenAI)
+          url = "https://api.deepseek.com/chat/completions";
+          fetchOptions = {
+            method: "POST",
+            headers: { 
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${deepseekApiKey.trim()}`
+            },
+            body: JSON.stringify({
+              model: aiModel,
+              messages: [
+                { role: "system", "content": systemPrompt },
+                { role: "user", "content": `Idea principal: ${idea}` }
+              ],
+              response_format: { type: "json_object" }
+            })
+          };
+        }
 
-          const textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        try {
+          const data = await fetchWithRetry(url, fetchOptions);
+          let textResult = "";
+
+          if (aiModel.startsWith("gemini")) {
+            textResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          } else {
+            textResult = data.choices?.[0]?.message?.content;
+            // Limpiar posible formato Markdown de la respuesta de DeepSeek si lo incluye por error
+            if (textResult) {
+              textResult = textResult.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+            }
+          }
           
           if (!textResult) {
             throw new Error("No text returned from API");
@@ -728,20 +770,48 @@
                     </div>
                   )}
 
-                  <div className="sf-field">
-                    <label className="sf-label">
-                      <div className="sf-label-dot" style={{ backgroundColor: 'var(--cyan)' }}></div>
-                      API Key de Gemini
-                    </label>
-                    <input 
-                      type="password"
-                      className="sf-input"
-                      placeholder="Pega tu clave AIzaSy..."
-                      value={userApiKey}
-                      onChange={handleApiKeyChange}
-                    />
-                    <div className="sf-char-counter">Se guarda en tu navegador de forma segura</div>
+                  <div className="sf-grid-2">
+                    <div className="sf-field">
+                      <label className="sf-label">
+                        <div className="sf-label-dot" style={{ backgroundColor: 'var(--cyan)' }}></div>
+                        Modelo de IA
+                      </label>
+                      <select 
+                        className="sf-select"
+                        value={aiModel}
+                        onChange={(e) => setAiModel(e.target.value)}
+                      >
+                        <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                        <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+                        <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+                      </select>
+                    </div>
+
+                    <div className="sf-field">
+                      <label className="sf-label">
+                        <div className="sf-label-dot" style={{ backgroundColor: 'var(--purple)' }}></div>
+                        API Key
+                      </label>
+                      {aiModel.startsWith("gemini") ? (
+                        <input 
+                          type="password"
+                          className="sf-input"
+                          placeholder="Clave de Gemini..."
+                          value={geminiApiKey}
+                          onChange={handleGeminiKeyChange}
+                        />
+                      ) : (
+                        <input 
+                          type="password"
+                          className="sf-input"
+                          placeholder="Clave de DeepSeek..."
+                          value={deepseekApiKey}
+                          onChange={handleDeepseekKeyChange}
+                        />
+                      )}
+                    </div>
                   </div>
+                  <div className="sf-char-counter" style={{marginTop: '-10px', marginBottom: '20px'}}>Se guarda en tu navegador de forma segura</div>
 
                   <div className="sf-field">
                     <label className="sf-label">
